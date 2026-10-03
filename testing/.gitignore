@@ -1,0 +1,8 @@
+*.pem
+*.csr
+*.crt
+*.log
+config.mk
+cloudflare_token
+acme-challenge/*
+!acme-challenge/README.md
