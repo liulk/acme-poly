@@ -19,7 +19,7 @@ Example:
 
 __author__ = ['Likai Liu (acme-poly fork)', 'Daniel Roesler (original acme-tiny)', 'Jon DeVree (acme-dns fork)', 'Tarjei Husøy (acme-tiny-dns01 fork)']
 __license__ = 'MIT'
-__version__ = '0.dev0'  # In development.
+__version__ = '0.dev20261003'  # In development.
 
 import argparse, base64, binascii, contextlib, functools, hashlib, json, logging, os, re, ssl, subprocess, sys, time, urllib.parse as up, urllib.request as ur
 
