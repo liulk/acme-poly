@@ -19,7 +19,7 @@ Example:
 
 __author__ = ['Likai Liu (acme-poly fork)', 'Daniel Roesler (original acme-tiny)', 'Jon DeVree (acme-dns fork)', 'Tarjei Husøy (acme-tiny-dns01 fork)']
 __license__ = 'MIT'
-__version__ = '0.dev20261003'  # In development.
+__version__ = '0.dev20261119'  # In development.
 
 import argparse, base64, binascii, contextlib, functools, hashlib, json, logging, os, re, ssl, subprocess, sys, time, urllib.parse as up, urllib.request as ur
 
@@ -45,14 +45,17 @@ def flags_parser():
   p.add_argument('--profile', type=str, metavar='PROFILE', help='specify the ACME profile for the new order; see https://letsencrypt.org/docs/profiles/')
   p.add_argument('--account-key-file', type=str, required=True, metavar='FILE', help='specify the account private key in OpenSSL format')
   p.add_argument('--csr-file', type=str, required=True, metavar='FILE', help='specify the certificate signing request in OpenSSL format')
+  p.add_argument('--domains', action='append', help='domains needing validation; automatically detected from --csr-file if omitted')
   p.add_argument('--contact', type=str, help='if set, update the account contact email')
   p.add_argument('--acme-dir', type=str, metavar='DIR', help='specify the local well-known directory for writing the ACME challenge')
-  p.add_argument('--dnsupdate', type=str.lower, choices=('null', 'tsig', 'cloudflare'), default='null', help='specify the DNS update method for DNS based ACME challenges')
+  p.add_argument('--dnsupdate', type=str.lower, choices=DNSUPDATERS, default='null', help='specify the DNS update method for DNS based ACME challenges')
   p.add_argument('--tsig-server', type=str, metavar='SERVER', help='specify the DNS server for --dnsupdate tsig')
   p.add_argument('--tsig-keyring-file', type=str, metavar='FILE', help='specify the JSON keyring file for --dnsupdate tsig; the JSON is an object {"keyname": "secret", or "keyname": ["algorithm", "secret"]}')
   p.add_argument('--api-token-file', type=str, metavar='FILE', help='specify the API token for --dnsupdate cloudflare')
   p.add_argument('--zone-id', type=str, metavar='ID', help='specify the DNS zone ID for --dnsupdate cloudflare')
   p.add_argument('--cloudflare-api', type=str, metavar='URL', default='https://api.cloudflare.com', help='specify the API endpoint for --dnsupdate cloudflare')
+  p.add_argument('--acmedns-dir', type=str, metavar='DIR', default='acme-dns', help='specify the path containing ACME DNS registration *.json files named after the domain to be validated')
+  p.add_argument('--acmedns-api', type=str, metavar='URL', default='http://localhost:8000', help='specify the API URL to update ACME DNS')
   p.add_argument('--output', '-o', type=str, help='specify the output file for writing the TLS certificate')
   return p
 
@@ -137,7 +140,7 @@ TOS = {'termsOfServiceAgreed': True}
 def acme_request_certificate(flags, challenge_context):
   log.info('Parsing account key and CSR...')
   alg, jwk = jwk_from_pem(flags.account_key_file)
-  domains = domains_from_csr(flags.csr_file)
+  domains = flags.domains
   log.info(f'Requesting a certificate for domains: {domains!r}')
 
   log.info('Getting directory...')
@@ -333,6 +336,27 @@ def dnsupdate_cloudflare(flags):
 
   return update_or_delete
 
+def dnsupdate_acmedns(flags):
+  for name in 'acmedns_dir', 'acmedns_api':
+    if not getattr(flags, name):
+      raise Error(f'missing --{name.replace("_", "-")} for --dnsupdate acmedns')
+  for name in flags.domains:
+    name = name.removeprefix('*.')
+    if not os.path.isfile(f'{flags.acmedns_dir}/{name}.json'):
+      raise Error(f'missing ACME DNS registration: {flags.acmedns_dir}/{name}.json')
+
+  def update_or_delete(name, txts=None):
+    if not txts: return  # ACME DNS does not support deletion.
+    name = re.sub(r'^_[\w-]+\.', '', name)
+    with open(f'{flags.acmedns_dir}/{name}.json', encoding='utf-8') as f:
+      reg = json.load(f)
+    upd = {'subdomain': reg['subdomain']}
+    if len(txts) == 1: upd['txt'] = txts[0]
+    else: upd['txts'] = txts
+    urlopen_json(up.urljoin(flags.acmedns_api, '/update'), request=upd, headers={'X-Api-User': reg['username'], 'X-Api-Key': reg['password']})
+
+  return update_or_delete
+
 @functools.cache
 def lookup_addrs(domain):
   return set((
@@ -374,16 +398,12 @@ def wait_nsaddrs(nsaddrs, name, txts, quick=False):
     log.error(f'Nameserver {ns} at {addr} has not updated {name} before deadline')
 
 GLOBAL_RESOLVERS = {('one.one.one.one', '1.1.1.1'), ('dns.google', '8.8.8.8'), ('dns9.quad9.net', '9.9.9.9')}
+DNSUPDATERS = {'null': dnsupdate_null, 'tsig': dnsupdate_tsig, 'cloudflare': dnsupdate_cloudflare, 'acmedns': dnsupdate_acmedns}
 
 def challenge_dns_01_or_dns_persist_01(flags):
   assert flags.method in ('dns-01', 'dns-persist-01')
-  update_or_delete = None
-  if flags.dnsupdate == 'tsig' or flags.tsig_server:
-    update_or_delete = dnsupdate_tsig(flags)
-  elif flags.dnsupdate == 'cloudflare':
-    update_or_delete = dnsupdate_cloudflare(flags)
-  elif flags.dnsupdate == 'null':
-    update_or_delete = dnsupdate_null(flags)
+  dnsupdater = DNSUPDATERS.get(flags.dnsupdate, dnsupdate_null)
+  update_or_delete = dnsupdater(flags)
 
   @contextlib.contextmanager
   def context(authorization, args):
@@ -429,6 +449,8 @@ def main():
   if flags.insecure:
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
+  if not flags.domains:
+    flags.domains = domains_from_csr(flags.csr_file)
   if not flags.ca_dir:
     flags.ca_dir = instances[flags.instance]
   if 'dns-' in flags.method and not dns:

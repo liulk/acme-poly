@@ -6,3 +6,5 @@ config.mk
 cloudflare_token
 acme-challenge/*
 !acme-challenge/README.md
+acme-dns/*
+!acme-dns/README.md

@@ -14,6 +14,11 @@ define DEFAULT_CONFIG_MK
 CLOUDFLARE_CSR_SUBJECT = $$(error config.mk: missing CLOUDFLARE_CSR_SUBJECT)
 CLOUDFLARE_CSR_SAN = $$(error config.mk: missing CLOUDFLARE_CSR_SAN)
 CLOUDFLARE_ZONE_ID = $$(error config.mk: missing CLOUDFLARE_ZONE_ID)
+
+ACMEDNS_CSR_SUBJECT = $$(error config.mk: missing ACMEDNS_CSR_SUBJECT)
+ACMEDNS_CSR_SAN = $$(error config.mk: missing ACMEDNS_CSR_SAN)
+ACMEDNS_DIR = $$(error config.mk: missing ACMEDNS_DIR)
+ACMEDNS_API = $$(error config.mk: missing ACMEDNS_API)
 endef
 
 export DEFAULT_CONFIG_MK
@@ -43,6 +48,10 @@ pebble_dns_persist_01:: $(patsubst %,pebble_dns_persist_01.%.crt,$(SUPPORTED_KEY
 cloudflare_pebble:: cloudflare_pebble_dns_01.p256.crt cloudflare_pebble_dns_persist_01.p384.crt
 cloudflare_staging:: cloudflare_staging_dns_01.p256.crt cloudflare_staging_dns_persist_01.p384.crt
 
+.PHONY: acmedns_pebble acmedns_staging
+acmedns_pebble:: acmedns_pebble_dns_01.p256.crt acmedns_pebble_dns_persist_01.p384.crt
+acmedns_staging:: acmedns_staging_dns_01.p256.crt acmedns_staging_dns_persist_01.p384.crt
+
 %.p256.pem:
 	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out $@
 %.p384.pem:
@@ -70,9 +79,9 @@ acme_tiny_debug.%.crt: server.%.csr account.%.pem
 		--disable-check > $@ || { rm -f $@; false; }
 
 VERBOSITY := --quiet --verbose
-INSTANCE := --instance invalid
-METHOD_FLAGS := --method invalid
-UPDATE_FLAGS := --dnsupdate invalid --no-check
+INSTANCE = $(error must set for $@: INSTANCE := --instance INSTANCE)
+METHOD_FLAGS = $(error must set for $@: METHOD_FLAGS := --method METHOD)
+UPDATE_FLAGS = $(error must set for $@: UPDATE_FLAGS := --dnsupdate UPDATER)
 
 .SECONDEXPANSION:
 %.crt %.log: %.csr account$$(suffix $$*).pem
@@ -94,12 +103,12 @@ pebble_dns_01.%.crt: METHOD_FLAGS := --method dns-01
 pebble_dns_persist_01.%.crt: METHOD_FLAGS := --method dns-persist-01
 
 cloudflare_token:
-	$(error please put your Cloudflare token in the cloudflare_token file)
+	$(error test requires a Cloudflare token in the cloudflare_token file)
 
 cloudflare_%.crt: cloudflare_token  # TODO: wishful thinking
-cloudflare_%.crt: CSR_SUBJECT = $(CLOUDFLARE_CSR_SUBJECT)
-cloudflare_%.crt: CSR_SAN = $(CLOUDFLARE_CSR_SAN)
-cloudflare_%.crt: UPDATE_FLAGS = --dnsupdate cloudflare --api-token-file cloudflare_token --zone-id $(CLOUDFLARE_ZONE_ID)
+cloudflare_%.crt: CSR_SUBJECT := $(CLOUDFLARE_CSR_SUBJECT)
+cloudflare_%.crt: CSR_SAN := $(CLOUDFLARE_CSR_SAN)
+cloudflare_%.crt: UPDATE_FLAGS := --dnsupdate cloudflare --api-token-file cloudflare_token --zone-id $(CLOUDFLARE_ZONE_ID)
 
 cloudflare_pebble_%.crt: INSTANCE := --instance pebble --insecure --profile shortlived
 cloudflare_pebble_dns_01.%.crt: METHOD_FLAGS := --method dns-01
@@ -108,3 +117,33 @@ cloudflare_pebble_dns_persist_01.%.crt: METHOD_FLAGS := --method dns-persist-01
 cloudflare_staging_%.crt: INSTANCE := --instance staging --profile shortlived
 cloudflare_staging_dns_01.%.crt: METHOD_FLAGS := --method dns-01
 cloudflare_staging_dns_persist_01.%.crt: METHOD_FLAGS := --method dns-persist-01
+
+acmedns_%.crt: $(ACMEDNS_DIR)
+acmedns_%.crt: CSR_SUBJECT := $(ACMEDNS_CSR_SUBJECT)
+acmedns_%.crt: CSR_SAN := $(ACMEDNS_CSR_SAN)
+acmedns_%.crt: UPDATE_FLAGS := --dnsupdate acmedns --acmedns-dir $(ACMEDNS_DIR) --acmedns-api $(ACMEDNS_API)
+
+acmedns_pebble_%.crt: INSTANCE := --instance pebble --insecure --profile shortlived
+acmedns_pebble_dns_01.%.crt: METHOD_FLAGS := --method dns-01
+acmedns_pebble_dns_persist_01.%.crt: METHOD_FLAGS := --method dns-persist-01
+
+acmedns_staging_%.crt: INSTANCE := --instance staging --profile shortlived
+acmedns_staging_dns_01.%.crt: METHOD_FLAGS := --method dns-01
+acmedns_staging_dns_persist_01.%.crt: METHOD_FLAGS := --method dns-persist-01
+
+comma := ,
+empty :=
+space := $(empty) $(empty)
+
+acmedns_san_spaced = $(subst $(comma),$(space),$(ACMEDNS_CSR_SAN))
+acmedns_san_filtered = $(filter-out critical,$(acmedns_san_spaced))
+acmedns_san_trimdns = $(patsubst DNS:%,%,$(acmedns_san_filtered))
+acmedns_san_trimwild = $(patsubst *.%,%,$(acmedns_san_trimdns))
+acmedns_hosts = $(sort $(ACMEDNS_CSR_SUBJECT) $(acmedns_san_trimwild))
+
+ACMEDNS_JSON = $(addprefix $(ACMEDNS_DIR)/,$(addsuffix .json,$(acmedns_hosts)))
+
+$(ACMEDNS_DIR):: $(ACMEDNS_JSON)
+
+%.json:
+	curl --json '{}' -o $@ $(ACMEDNS_API)/register
